@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     xhs_login_state_path: str = Field(default=".auth/xiaohongshu.json", alias="XHS_LOGIN_STATE_PATH")
     xhs_headless: bool = Field(default=False, alias="XHS_HEADLESS")
     xhs_base_url: str = Field(default="https://creator.xiaohongshu.com", alias="XHS_BASE_URL")
+    web_host: str = Field(default="127.0.0.1", alias="WEB_HOST")
+    web_port: int = Field(default=9000, alias="WEB_PORT")
 
 
 settings = Settings()

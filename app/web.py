@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.account_state import build_profile_state_path, list_login_state_files, set_active_login_state_path
+from app.config import settings
 from app.content.generator import SoftPostPipeline
 from app.distribution.xiaohongshu import export_login_state_to_sync, get_auth_status, publish_sync
 from app.models import GeneratedAssets, SoftPost
@@ -828,5 +829,5 @@ def healthz() -> dict[str, str]:
 
 
 def main() -> None:
-    logger.info("server | starting on http://127.0.0.1:8000")
-    uvicorn.run("app.web:app", host="127.0.0.1", port=8000, reload=False)
+    logger.info("server | starting on http://%s:%s", settings.web_host, settings.web_port)
+    uvicorn.run("app.web:app", host=settings.web_host, port=settings.web_port, reload=False)

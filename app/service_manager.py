@@ -8,6 +8,7 @@ import time
 import ctypes
 from pathlib import Path
 
+from app.config import settings
 from app.web_logging import LOG_FILE, get_web_logger
 
 PID_DIR = Path("run")
@@ -71,9 +72,9 @@ def start_main() -> None:
         "uvicorn",
         "app.web:app",
         "--host",
-        "127.0.0.1",
+        settings.web_host,
         "--port",
-        "8000",
+        str(settings.web_port),
     ]
 
     log_handle = open(LOG_FILE, "a", encoding="utf-8")
@@ -94,7 +95,7 @@ def start_main() -> None:
     PID_FILE.write_text(str(process.pid), encoding="utf-8")
     logger.info("service | started | pid=%s", process.pid)
     print(f"softpost web started in background, pid={process.pid}")
-    print("open http://127.0.0.1:8000")
+    print(f"open http://{settings.web_host}:{settings.web_port}")
 
 
 def stop_main() -> None:
@@ -136,7 +137,7 @@ def status_main() -> None:
 
     if _is_running(pid):
         print(f"softpost web is running, pid={pid}")
-        print("url=http://127.0.0.1:8000")
+        print(f"url=http://{settings.web_host}:{settings.web_port}")
     else:
         PID_FILE.unlink(missing_ok=True)
         print("softpost web is not running")

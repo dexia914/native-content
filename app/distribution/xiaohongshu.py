@@ -1,29 +1,45 @@
+from __future__ import annotations
+
 import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
+from playwright.async_api import BrowserContext, Locator, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
+from app.account_state import ensure_active_login_state, get_active_login_state_path, set_active_login_state_path
 from app.config import settings
 from app.models import GeneratedAssets
+
+TAB_TIMEOUT_MS = 5000
+UPLOAD_TIMEOUT_MS = 10000
+EDITOR_TIMEOUT_MS = 10000
+PUBLISH_TIMEOUT_MS = 10000
+UPLOAD_SETTLE_SECONDS = 5
+SUBMIT_SETTLE_SECONDS = 2
+LOGIN_WAIT_SECONDS = 300
+
+AUTH_COOKIE_NAMES = {
+    "customer-sso-sid",
+    "access-token-creator.xiaohongshu.com",
+    "galaxy_creator_session_id",
+    "galaxy.creator.beaker.session.id",
+    "x-user-id-creator.xiaohongshu.com",
+}
 
 
 class XiaohongshuPublisher:
     async def publish(self, assets: GeneratedAssets, auto_submit: bool = False) -> None:
-        """Upload note draft via Xiaohongshu Creator Center and optionally submit it."""
-        state_path = Path(settings.xhs_login_state_path)
+        state_path = get_active_login_state_path()
         if not state_path.exists():
             raise FileNotFoundError(
-                f"Missing login state file: {state_path}. "
-                "Run `softpost auth` first to export it."
+                f"Missing login state file: {state_path}. Run `softpost-cli auth` first."
             )
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=settings.xhs_headless)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=settings.xhs_headless)
             context = await browser.new_context(storage_state=str(state_path))
             page = await context.new_page()
-
             await page.goto(f"{settings.xhs_base_url}/publish/publish", wait_until="domcontentloaded")
             await page.wait_for_load_state("networkidle")
 
@@ -34,7 +50,7 @@ class XiaohongshuPublisher:
 
             if auto_submit:
                 await self._submit(page)
-                await asyncio.sleep(2)
+                await asyncio.sleep(SUBMIT_SETTLE_SECONDS)
             else:
                 await asyncio.sleep(1)
 
@@ -64,21 +80,14 @@ class XiaohongshuPublisher:
             if not box or box["width"] <= 0 or box["height"] <= 0:
                 continue
 
-            try:
-                await tab.click(force=True, timeout=3000)
-            except Exception:
-                pass
-
-            if await active_image_tab.count() > 0:
-                return
-
-            try:
-                await title.click(force=True, timeout=3000)
-            except Exception:
-                pass
-
-            if await active_image_tab.count() > 0:
-                return
+            for clickable in (tab, title):
+                try:
+                    await clickable.click(force=True, timeout=3000)
+                except Exception:
+                    pass
+                if await active_image_tab.count() > 0:
+                    await asyncio.sleep(1)
+                    return
 
             dispatched = await tab.evaluate(
                 """
@@ -86,8 +95,7 @@ class XiaohongshuPublisher:
                   const rect = el.getBoundingClientRect();
                   const x = rect.left + rect.width / 2;
                   const y = rect.top + rect.height / 2;
-                  const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-                  for (const type of events) {
+                  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
                     el.dispatchEvent(new MouseEvent(type, {
                       bubbles: true,
                       cancelable: true,
@@ -104,21 +112,14 @@ class XiaohongshuPublisher:
                 try:
                     await page.locator(".header-tabs .creator-tab.active .title").filter(has_text="上传图文").first.wait_for(
                         state="visible",
-                        timeout=5000,
+                        timeout=TAB_TIMEOUT_MS,
                     )
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     return
                 except PlaywrightTimeoutError:
                     continue
 
         raise RuntimeError("Could not switch to the '上传图文' tab on the Xiaohongshu publish page.")
-
-        await page.locator(".header-tabs .creator-tab.active .title").filter(has_text="上传图文").first.wait_for(
-            state="visible",
-            timeout=10000,
-        )
-        await asyncio.sleep(1)
-
 
     async def _upload_cover(self, page: Page, assets: GeneratedAssets) -> None:
         preferred = [
@@ -127,7 +128,7 @@ class XiaohongshuPublisher:
             ".upload-content input.upload-input[type='file'][accept*='.png']",
             ".upload-content input.upload-input[type='file'][accept*='.webp']",
         ]
-        locator = await self._first_visible_locator(page, preferred, timeout=10000, include_hidden=True)
+        locator = await self._first_visible_locator(page, preferred, timeout=UPLOAD_TIMEOUT_MS, include_hidden=True)
         if locator is None:
             fallback = [
                 ".upload-content input[type='file'][accept*='.png']",
@@ -135,12 +136,12 @@ class XiaohongshuPublisher:
                 "input[type='file'][accept*='image']",
                 "input[type='file']",
             ]
-            locator = await self._first_visible_locator(page, fallback, timeout=10000, include_hidden=True)
+            locator = await self._first_visible_locator(page, fallback, timeout=UPLOAD_TIMEOUT_MS, include_hidden=True)
         if locator is None:
             raise RuntimeError("Could not find the image upload control on the Xiaohongshu publish page.")
 
         await locator.set_input_files(str(assets.collage_path))
-        await asyncio.sleep(5)
+        await asyncio.sleep(UPLOAD_SETTLE_SECONDS)
 
     async def _fill_title(self, page: Page, assets: GeneratedAssets) -> None:
         selectors = [
@@ -149,7 +150,7 @@ class XiaohongshuPublisher:
             "input[placeholder*='填写标题']",
             "input:not([type='file'])",
         ]
-        locator = await self._first_visible_locator(page, selectors, timeout=8000)
+        locator = await self._first_visible_locator(page, selectors, timeout=EDITOR_TIMEOUT_MS)
         if locator is not None:
             await locator.click()
             await locator.fill(assets.post.title)
@@ -165,7 +166,7 @@ class XiaohongshuPublisher:
             "[contenteditable='true']",
             "div[role='textbox']",
         ]
-        locator = await self._first_visible_locator(page, selectors, timeout=10000)
+        locator = await self._first_visible_locator(page, selectors, timeout=EDITOR_TIMEOUT_MS)
         if locator is None:
             raise RuntimeError("Could not find the body editor on the Xiaohongshu publish page.")
 
@@ -187,12 +188,12 @@ class XiaohongshuPublisher:
             page.locator("[role='button']:has-text('发布')"),
             page.locator("div:has-text('发布')"),
         ]
-        button = await self._first_actionable(candidates, timeout=10000)
+        button = await self._first_actionable(candidates, timeout=PUBLISH_TIMEOUT_MS)
         if button is None:
             raise RuntimeError("Could not find the publish button. Update selectors in app/distribution/xiaohongshu.py.")
 
         await button.click()
-        await asyncio.sleep(2)
+        await asyncio.sleep(SUBMIT_SETTLE_SECONDS)
 
         confirm_candidates = [
             page.get_by_role("button", name="确认发布"),
@@ -203,6 +204,7 @@ class XiaohongshuPublisher:
         confirm = await self._first_actionable(confirm_candidates, timeout=4000)
         if confirm is not None:
             await confirm.click()
+            await asyncio.sleep(SUBMIT_SETTLE_SECONDS)
 
     async def _first_visible_locator(
         self,
@@ -247,25 +249,50 @@ class XiaohongshuPublisher:
         return None
 
 
-async def export_login_state() -> Path:
-    """Open login page and save Playwright storage state after manual login."""
-    state_path = Path(settings.xhs_login_state_path)
+async def _wait_for_manual_login(context: BrowserContext, page: Page, timeout_seconds: int = LOGIN_WAIT_SECONDS) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    last_url = ""
+
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            last_url = page.url
+            cookies = await context.cookies()
+            auth_names = {cookie.get("name") for cookie in cookies}
+            if AUTH_COOKIE_NAMES & auth_names and "creator.xiaohongshu.com" in last_url:
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+    raise TimeoutError(
+        "等待小红书账号登录超时。请确认已在弹出的浏览器中完成登录，并已进入创作中心页面。"
+    )
+
+
+async def _export_login_state_impl(state_path: Path) -> Path:
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=False)
         context = await browser.new_context()
         page = await context.new_page()
 
         await page.goto(f"{settings.xhs_base_url}/publish/publish", wait_until="domcontentloaded")
-        print("请在打开的浏览器中完成登录，确认进入创作中心后，回到终端按回车保存登录态。")
-        input()
-
+        await _wait_for_manual_login(context, page)
         await context.storage_state(path=str(state_path))
         await context.close()
         await browser.close()
 
+    set_active_login_state_path(str(state_path))
     return state_path
+
+
+async def export_login_state() -> Path:
+    return await _export_login_state_impl(Path(settings.xhs_login_state_path))
+
+
+async def export_login_state_to(state_path: str | Path) -> Path:
+    return await _export_login_state_impl(Path(state_path))
 
 
 def publish_sync(assets: GeneratedAssets, auto_submit: bool = False) -> None:
@@ -273,28 +300,28 @@ def publish_sync(assets: GeneratedAssets, auto_submit: bool = False) -> None:
 
 
 def export_login_state_sync() -> Path:
-    return asyncio.run(export_login_state())
+    path = asyncio.run(export_login_state())
+    ensure_active_login_state()
+    return path
+
+
+def export_login_state_to_sync(state_path: str | Path) -> Path:
+    return asyncio.run(export_login_state_to(state_path))
 
 
 def get_auth_status() -> dict[str, str | int | float]:
-    state_path = Path(settings.xhs_login_state_path)
+    state_path = get_active_login_state_path()
     if not state_path.exists():
-        raise FileNotFoundError(f"Missing login state file: {state_path}. Run `softpost auth` first.")
+        raise FileNotFoundError(f"Missing login state file: {state_path}. Run `softpost-cli auth` first.")
 
     data = json.loads(state_path.read_text(encoding="utf-8"))
     cookies = data.get("cookies", [])
-    key_names = {
-        "customer-sso-sid",
-        "access-token-creator.xiaohongshu.com",
-        "galaxy_creator_session_id",
-        "galaxy.creator.beaker.session.id",
-        "x-user-id-creator.xiaohongshu.com",
-    }
-
     key_cookies = [
         cookie
         for cookie in cookies
-        if cookie.get("name") in key_names and isinstance(cookie.get("expires"), (int, float)) and cookie.get("expires", 0) > 0
+        if cookie.get("name") in AUTH_COOKIE_NAMES
+        and isinstance(cookie.get("expires"), (int, float))
+        and cookie.get("expires", 0) > 0
     ]
     if not key_cookies:
         raise RuntimeError("No expiring Xiaohongshu auth cookies were found in the saved storage state.")
@@ -307,13 +334,13 @@ def get_auth_status() -> dict[str, str | int | float]:
 
     if seconds_left <= 0:
         level = "expired"
-        message = "[red]登录态已过期，请重新执行 `softpost auth`。[/red]"
+        message = "登录态已过期，请重新执行 `softpost-cli auth`。"
     elif days_left <= 3:
         level = "expiring_soon"
-        message = "[yellow]登录态将在 3 天内到期，建议尽快重新导出。[/yellow]"
+        message = "登录态将在 3 天内到期，建议尽快重新导出。"
     else:
         level = "ok"
-        message = "[green]登录态看起来仍可用。[/green]"
+        message = "登录态看起来仍可用。"
 
     return {
         "state_path": str(state_path),

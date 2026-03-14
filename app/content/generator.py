@@ -7,6 +7,7 @@ from app.config import settings
 from app.content.collage import make_cover_collage, render_markdown
 from app.models import GeneratedAssets
 from app.prompts import build_softpost_prompt
+from app.storage import save_generated_post
 
 
 class SoftPostPipeline:
@@ -25,5 +26,6 @@ class SoftPostPipeline:
         raw = self.image_gen.generate(post.image_prompt, base / "raw.png")
         collage = make_cover_collage(raw, post, base / "cover.png")
         md = render_markdown(post, collage, base / "post.md")
-
-        return GeneratedAssets(post=post, raw_image_path=raw, collage_path=collage, markdown_path=md)
+        assets = GeneratedAssets(post=post, raw_image_path=raw, collage_path=collage, markdown_path=md)
+        save_generated_post(assets, monetization_core)
+        return assets

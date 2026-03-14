@@ -14,6 +14,10 @@ dependencies = [
   "pillow>=10.3.0",
   "opencv-python>=4.10.0.84",
   "playwright>=1.45.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "sqlalchemy>=2.0.36",
+  "pymysql>=1.1.1",
 ]
 
 [project.optional-dependencies]
@@ -22,7 +26,11 @@ dev = [
 ]
 
 [project.scripts]
-softpost = "app.cli:app"
+softpost = "app.web:main"
+softpost-cli = "app.cli:app"
+softpost-start = "app.service_manager:start_main"
+softpost-stop = "app.service_manager:stop_main"
+softpost-status = "app.service_manager:status_main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

@@ -3,6 +3,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from app.compliance import apply_compliance_mode
 from app.config import settings
 from app.models import SoftPost
 
@@ -45,11 +46,12 @@ class SoftPostWriter:
                 "只生成适合后期排版的封面背景图。"
             )
 
-        return SoftPost(
+        post = SoftPost(
             topic=topic,
             audience=audience,
-            title=data.get("title", "碎片时间也能做的低门槛副业思路"),
-            body=data.get("body", "先收藏，后面我再补充更完整的实操细节。"),
+            title=data.get("title", "碎片时间也能做的低门槛生活尝试"),
+            body=data.get("body", "先收藏，后面我再补充更完整的体验细节。"),
             image_prompt=image_prompt,
-            hashtags=data.get("hashtags", ["副业", "大学生兼职", "宝妈副业"]),
+            hashtags=data.get("hashtags", ["日常分享", "经验记录", "时间管理"]),
         )
+        return apply_compliance_mode(post)

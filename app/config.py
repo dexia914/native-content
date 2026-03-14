@@ -17,9 +17,13 @@ class Settings(BaseSettings):
     image_size: str = Field(default="1024x1024", alias="IMAGE_SIZE")
     image_workspace: str = Field(default="", alias="IMAGE_WORKSPACE")
     no_text_in_image: bool = Field(default=True, alias="NO_TEXT_IN_IMAGE")
+    xhs_compliance_mode: bool = Field(default=True, alias="XHS_COMPLIANCE_MODE")
 
     output_dir: str = Field(default="outputs", alias="OUTPUT_DIR")
     font_path: str = Field(default="", alias="FONT_PATH")
+    mysql_url: str = Field(default="", alias="MYSQL_URL")
+    mysql_pool_size: int = Field(default=10, alias="MYSQL_POOL_SIZE")
+    mysql_pool_recycle: int = Field(default=3600, alias="MYSQL_POOL_RECYCLE")
 
     xhs_login_state_path: str = Field(default=".auth/xiaohongshu.json", alias="XHS_LOGIN_STATE_PATH")
     xhs_headless: bool = Field(default=False, alias="XHS_HEADLESS")

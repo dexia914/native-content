@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     image_base_url: str = Field(default="https://api.openai.com/v1", alias="IMAGE_BASE_URL")
     image_api_key: str = Field(default="", alias="IMAGE_API_KEY")
     image_size: str = Field(default="1024x1024", alias="IMAGE_SIZE")
+    image_workspace: str = Field(default="", alias="IMAGE_WORKSPACE")
+    no_text_in_image: bool = Field(default=True, alias="NO_TEXT_IN_IMAGE")
 
     output_dir: str = Field(default="outputs", alias="OUTPUT_DIR")
     font_path: str = Field(default="", alias="FONT_PATH")

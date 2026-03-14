@@ -1,0 +1,7 @@
+.venv/
+outputs/
+.idea/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.auth/

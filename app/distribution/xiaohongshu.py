@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 from playwright.async_api import BrowserContext, Locator, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
-from app.account_state import ensure_active_login_state, get_active_login_state_path, set_active_login_state_path
+from app.account_state import get_active_login_account, save_login_account
 from app.config import settings
 from app.models import GeneratedAssets
 
@@ -30,15 +28,13 @@ AUTH_COOKIE_NAMES = {
 
 class XiaohongshuPublisher:
     async def publish(self, assets: GeneratedAssets, auto_submit: bool = False) -> None:
-        state_path = get_active_login_state_path()
-        if not state_path.exists():
-            raise FileNotFoundError(
-                f"Missing login state file: {state_path}. Run `softpost-cli auth` first."
-            )
+        account = get_active_login_account()
+        if account is None:
+            raise FileNotFoundError("No active Xiaohongshu account in MySQL. Add one from the Web page or run `softpost-cli auth`.")
 
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=settings.xhs_headless)
-            context = await browser.new_context(storage_state=str(state_path))
+            context = await browser.new_context(storage_state=account.storage_state)
             page = await context.new_page()
             await page.goto(f"{settings.xhs_base_url}/publish/publish", wait_until="domcontentloaded")
             await page.wait_for_load_state("networkidle")
@@ -250,28 +246,21 @@ class XiaohongshuPublisher:
 
 
 async def _wait_for_manual_login(context: BrowserContext, page: Page, timeout_seconds: int = LOGIN_WAIT_SECONDS) -> None:
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    last_url = ""
-
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
         try:
-            last_url = page.url
             cookies = await context.cookies()
             auth_names = {cookie.get("name") for cookie in cookies}
-            if AUTH_COOKIE_NAMES & auth_names and "creator.xiaohongshu.com" in last_url:
+            if AUTH_COOKIE_NAMES & auth_names and "creator.xiaohongshu.com" in page.url:
                 return
         except Exception:
             pass
         await asyncio.sleep(2)
 
-    raise TimeoutError(
-        "等待小红书账号登录超时。请确认已在弹出的浏览器中完成登录，并已进入创作中心页面。"
-    )
+    raise TimeoutError("等待小红书账号登录超时。请确认已在弹出的浏览器中完成登录，并已进入创作中心页面。")
 
 
-async def _export_login_state_impl(state_path: Path) -> Path:
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-
+async def _export_login_state_impl(profile: str) -> str:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=False)
         context = await browser.new_context()
@@ -279,43 +268,32 @@ async def _export_login_state_impl(state_path: Path) -> Path:
 
         await page.goto(f"{settings.xhs_base_url}/publish/publish", wait_until="domcontentloaded")
         await _wait_for_manual_login(context, page)
-        await context.storage_state(path=str(state_path))
+        storage_state = await context.storage_state()
         await context.close()
         await browser.close()
 
-    set_active_login_state_path(str(state_path))
-    return state_path
+    record = save_login_account(profile, storage_state, make_active=True)
+    return record.profile
 
 
-async def export_login_state() -> Path:
-    return await _export_login_state_impl(Path(settings.xhs_login_state_path))
-
-
-async def export_login_state_to(state_path: str | Path) -> Path:
-    return await _export_login_state_impl(Path(state_path))
+async def export_login_state(profile: str = "default") -> str:
+    return await _export_login_state_impl(profile)
 
 
 def publish_sync(assets: GeneratedAssets, auto_submit: bool = False) -> None:
     asyncio.run(XiaohongshuPublisher().publish(assets, auto_submit=auto_submit))
 
 
-def export_login_state_sync() -> Path:
-    path = asyncio.run(export_login_state())
-    ensure_active_login_state()
-    return path
-
-
-def export_login_state_to_sync(state_path: str | Path) -> Path:
-    return asyncio.run(export_login_state_to(state_path))
+def export_login_state_sync(profile: str = "default") -> str:
+    return asyncio.run(export_login_state(profile))
 
 
 def get_auth_status() -> dict[str, str | int | float]:
-    state_path = get_active_login_state_path()
-    if not state_path.exists():
-        raise FileNotFoundError(f"Missing login state file: {state_path}. Run `softpost-cli auth` first.")
+    account = get_active_login_account()
+    if account is None:
+        raise FileNotFoundError("No active Xiaohongshu account in MySQL. Add one from the Web page or run `softpost-cli auth` first.")
 
-    data = json.loads(state_path.read_text(encoding="utf-8"))
-    cookies = data.get("cookies", [])
+    cookies = account.storage_state.get("cookies", [])
     key_cookies = [
         cookie
         for cookie in cookies
@@ -334,16 +312,16 @@ def get_auth_status() -> dict[str, str | int | float]:
 
     if seconds_left <= 0:
         level = "expired"
-        message = "登录态已过期，请重新执行 `softpost-cli auth`。"
+        message = "登录态已过期，请重新登录并保存账号。"
     elif days_left <= 3:
         level = "expiring_soon"
-        message = "登录态将在 3 天内到期，建议尽快重新导出。"
+        message = "登录态将在 3 天内到期，建议尽快重新保存账号。"
     else:
         level = "ok"
         message = "登录态看起来仍可用。"
 
     return {
-        "state_path": str(state_path),
+        "profile": account.profile,
         "cookie_count": len(key_cookies),
         "earliest_cookie": str(earliest["name"]),
         "earliest_expiry_utc": expiry_utc,

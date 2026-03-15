@@ -10,10 +10,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.account_state import build_profile_state_path, list_login_state_files, set_active_login_state_path
+from app.account_state import build_profile_name, format_account_option_label, list_login_accounts, set_active_login_account
 from app.config import settings
 from app.content.generator import SoftPostPipeline
-from app.distribution.xiaohongshu import export_login_state_to_sync, get_auth_status, publish_sync
+from app.distribution.xiaohongshu import export_login_state_sync, get_auth_status, publish_sync
 from app.models import GeneratedAssets, SoftPost
 from app.storage import ensure_storage_schema, list_recent_generated_posts
 from app.web_logging import get_web_logger, read_recent_logs
@@ -38,7 +38,7 @@ class PublishRequest(BaseModel):
 
 
 class SwitchAccountRequest(BaseModel):
-    state_path: str
+    profile: str
 
 
 class AddAccountRequest(BaseModel):
@@ -121,10 +121,10 @@ def _render_home(message: str = "", level: str = "info") -> str:
     try:
         auth_status = get_auth_status()
     except Exception as exc:
-        auth_status = {"level": "unknown", "message": f"登录态状态未知: {exc}"}
+        auth_status = {"level": "unknown", "message": f"登录态状态未知: {exc}", "profile": ""}
         logger.exception("home | failed to load auth status")
 
-    account_files = list_login_state_files()
+    account_records = list_login_accounts()
 
     try:
         artifacts = list_recent_generated_posts()
@@ -170,13 +170,13 @@ def _render_home(message: str = "", level: str = "info") -> str:
     artifact_list_html = "".join(artifacts_html) if artifacts_html else ""
     empty_state_style = "display:none;" if artifacts_html else ""
     account_options = "".join(
-        f'<option value="{html.escape(item.path)}"{" selected" if item.is_active else ""}>'
-        f'{html.escape(item.name)} · {html.escape(item.updated_at)}</option>'
-        for item in account_files
+        f'<option value="{html.escape(item.profile)}"{" selected" if item.is_active else ""}>'
+        f'{html.escape(item.profile)} · {html.escape(item.updated_at)}</option>'
+        for item in account_records
     )
     account_empty = ""
-    if not account_files:
-        account_empty = '<p class="muted" style="margin:12px 0 0;">当前 `.auth` 目录下还没有登录态文件。</p>'
+    if not account_records:
+        account_empty = '<p class="muted" style="margin:12px 0 0;">MySQL 中还没有小红书账号记录。</p>'
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -242,7 +242,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
       font-size: 14px;
       color: var(--muted);
     }}
-    input, textarea {{
+    input, textarea, select {{
       width: 100%;
       margin-top: 6px;
       padding: 12px 14px;
@@ -285,26 +285,25 @@ def _render_home(message: str = "", level: str = "info") -> str:
       background: #fff;
       line-height: 1.5;
     }}
-    .message.success {{
-      background: var(--ok-bg);
-      border-color: var(--ok-line);
-    }}
-    .message.warning {{
+    .message.success {{ background: var(--ok-bg); border-color: var(--ok-line); }}
+    .message.warning {{ background: var(--warn-bg); border-color: var(--warn-line); }}
+    .message.info {{ background: var(--info-bg); border-color: var(--info-line); }}
+    .message-title {{ display: block; margin-bottom: 4px; font-weight: 700; }}
+    .field-tip {{
+      display: none;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--warn-line);
       background: var(--warn-bg);
-      border-color: var(--warn-line);
+      color: #7b4f00;
+      font-size: 13px;
+      line-height: 1.5;
     }}
-    .message.info {{
-      background: var(--info-bg);
-      border-color: var(--info-line);
-    }}
-    .message-title {{
-      display: block;
-      margin-bottom: 4px;
-      font-weight: 700;
-    }}
+    .field-tip.active {{ display: block; }}
     .meta {{
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }}
     .meta-card {{
@@ -330,11 +329,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
       gap: 10px;
       margin-top: 12px;
     }}
-    .result-links a {{
-      color: var(--brand);
-      text-decoration: none;
-      font-weight: 600;
-    }}
+    .result-links a {{ color: var(--brand); text-decoration: none; font-weight: 600; }}
     .artifact-list {{
       display: grid;
       gap: 16px;
@@ -355,11 +350,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
       display: block;
       object-fit: cover;
     }}
-    .artifact-meta {{
-      color: var(--muted);
-      font-size: 13px;
-      margin: 6px 0;
-    }}
+    .artifact-meta {{ color: var(--muted); font-size: 13px; margin: 6px 0; }}
     .artifact-missing {{
       height: 100%;
       min-height: 180px;
@@ -418,12 +409,11 @@ def _render_home(message: str = "", level: str = "info") -> str:
     }}
     .overlay-title {{ margin: 0 0 8px; font-size: 20px; }}
     .overlay-text {{ margin: 0; color: var(--muted); }}
-    @keyframes spin {{
-      to {{ transform: rotate(360deg); }}
-    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
     @media (max-width: 900px) {{
       .grid {{ grid-template-columns: 1fr; }}
       .artifact-card {{ grid-template-columns: 1fr; }}
+      .meta {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -438,7 +428,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
   <main class="page">
     <section class="hero">
       <h1>小红书动态选题软文生成器</h1>
-      <p>FastAPI Web 控制台。会记录操作成功状态和错误信息，方便快速定位问题。</p>
+      <p>账号、生成记录和操作日志都统一接入 MySQL / Web 管理界面。</p>
       <div id="page-message">{message_block}</div>
     </section>
     <section class="grid">
@@ -461,8 +451,12 @@ def _render_home(message: str = "", level: str = "info") -> str:
         <div id="generate-result" class="result-card"></div>
       </div>
       <div class="panel">
-        <h2>发布与登录态</h2>
+        <h2>发布与账号</h2>
         <div class="meta">
+          <div class="meta-card">
+            <strong>当前账号</strong>
+            <span id="auth-profile">{html.escape(str(auth_status.get("profile", "")))}</span>
+          </div>
           <div class="meta-card">
             <strong>登录态状态</strong>
             <span id="auth-level">{html.escape(str(auth_status.get("level", "unknown")))}</span>
@@ -473,20 +467,21 @@ def _render_home(message: str = "", level: str = "info") -> str:
           </div>
         </div>
         <form id="account-form" style="margin-top:16px;">
-          <label>当前小红书账号
-            <select id="account-select" name="state_path" style="width:100%; margin-top:6px; padding:12px 14px; border-radius:14px; border:1px solid var(--line); background:#fff; font:inherit; color:var(--ink);" {"disabled" if not account_files else ""}>
+          <label>切换小红书账号
+            <select id="account-select" name="profile" {"disabled" if not account_records else ""}>
               {account_options}
             </select>
           </label>
           <div class="actions">
-            <button type="submit" {"disabled" if not account_files else ""}>切换账号</button>
+            <button type="submit" {"disabled" if not account_records else ""}>切换账号</button>
           </div>
           {account_empty}
         </form>
+        <div id="account-tip" class="field-tip"></div>
         <div class="message info">
           <span class="message-title">新增账号</span>
-          <div>可以直接在下面输入账号标识并点击“新增账号”，系统会拉起浏览器等待你完成登录，然后自动保存并切换到该账号。</div>
-          <div>如果你更习惯终端，也可以执行 <code>softpost-cli auth --profile main</code>。</div>
+          <div>账号会直接保存到 MySQL 表，不再依赖 `.auth` 目录。</div>
+          <div>点击“新增账号”后会拉起浏览器，请在弹出的浏览器中完成登录，系统会自动保存并切换到该账号。</div>
         </div>
         <form id="add-account-form" style="margin-top:16px;">
           <label>新增账号标识
@@ -501,7 +496,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
             <input name="artifact_dir" placeholder="例如：outputs/20260314_xxx" required>
           </label>
           <label style="display:flex; align-items:center; gap:10px; color:var(--ink);">
-            <input type="checkbox" name="auto_submit" style="width:auto; margin:0;">
+            <input type="checkbox" name="auto_submit" style="width:auto; margin:0;" checked>
             自动点击发布
           </label>
           <div class="actions">
@@ -510,9 +505,6 @@ def _render_home(message: str = "", level: str = "info") -> str:
           </div>
         </form>
         <div id="publish-result" class="result-card"></div>
-        <p class="muted" style="margin:16px 0 0; font-size:14px;">
-          登录导出仍建议在终端执行 <code>softpost-cli auth</code>，因为它需要人工在浏览器完成登录。
-        </p>
       </div>
     </section>
     <section class="panel" style="margin-top:20px;">
@@ -537,7 +529,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
       document.getElementById('busy-text').textContent = text;
       overlay.classList.toggle('active', active);
       overlay.setAttribute('aria-hidden', String(!active));
-      document.querySelectorAll('button, input, textarea').forEach((el) => {{
+      document.querySelectorAll('button, input, textarea, select').forEach((el) => {{
         if (active) {{
           el.setAttribute('data-prev-disabled', el.disabled ? 'true' : 'false');
           el.disabled = true;
@@ -573,17 +565,24 @@ def _render_home(message: str = "", level: str = "info") -> str:
       node.classList.add('active');
     }}
 
-    function upsertAccountOption(path, label) {{
+    function upsertAccountOption(profile, label) {{
       const select = document.getElementById('account-select');
-      let option = Array.from(select.options).find((item) => item.value === path);
+      let option = Array.from(select.options).find((item) => item.value === profile);
       if (!option) {{
         option = document.createElement('option');
-        option.value = path;
+        option.value = profile;
         select.prepend(option);
       }}
       option.textContent = label;
       option.selected = true;
       select.disabled = false;
+    }}
+
+    function setAccountTip(message = '') {{
+      const tip = document.getElementById('account-tip');
+      if (!tip) return;
+      tip.textContent = message;
+      tip.classList.toggle('active', Boolean(message));
     }}
 
     function prependArtifactCard(cardHtml) {{
@@ -593,6 +592,16 @@ def _render_home(message: str = "", level: str = "info") -> str:
         emptyState.style.display = 'none';
       }}
       list.insertAdjacentHTML('afterbegin', cardHtml);
+    }}
+
+    function ensureAccountSelected() {{
+      const select = document.getElementById('account-select');
+      if (!select || select.disabled || !select.value) {{
+        setAccountTip('请先新增或选择一个小红书账号，再执行切换或发布操作。');
+        return false;
+      }}
+      setAccountTip('');
+      return true;
     }}
 
     async function postJson(url, payload) {{
@@ -645,15 +654,18 @@ def _render_home(message: str = "", level: str = "info") -> str:
     document.getElementById('account-form').addEventListener('submit', async (event) => {{
       event.preventDefault();
       if (busy) return;
+      if (!ensureAccountSelected()) return;
       const form = new FormData(event.target);
-      setBusy(true, '正在切换账号', '正在切换当前生效的小红书登录态，请稍候。');
+      setBusy(true, '正在切换账号', '正在切换当前生效的小红书账号，请稍候。');
       try {{
         const result = await postJson('/api/account/select', {{
-          state_path: form.get('state_path')
+          profile: form.get('profile')
         }});
+        setAccountTip('');
+        document.getElementById('auth-profile').textContent = result.auth_status.profile;
         document.getElementById('auth-level').textContent = result.auth_status.level;
         document.getElementById('auth-message').textContent = result.auth_status.message;
-        renderMessage('page-message', 'success', '账号已切换', `当前使用：${{result.state_path}}`);
+        renderMessage('page-message', 'success', '账号已切换', `当前使用：${{result.profile}}`);
       }} catch (error) {{
         renderMessage('page-message', 'warning', '切换账号失败', error.message);
       }} finally {{
@@ -665,15 +677,17 @@ def _render_home(message: str = "", level: str = "info") -> str:
       event.preventDefault();
       if (busy) return;
       const form = new FormData(event.target);
-      setBusy(true, '正在新增账号', '浏览器即将打开小红书创作中心，请在弹出的浏览器里完成登录，系统会自动保存并切换账号。');
+      setBusy(true, '正在新增账号', '浏览器即将打开小红书创作中心，请在弹出的浏览器中完成登录，系统会自动保存到 MySQL 并切换账号。');
       try {{
         const result = await postJson('/api/account/add', {{
           profile: form.get('profile')
         }});
-        upsertAccountOption(result.state_path, result.option_label);
+        setAccountTip('');
+        upsertAccountOption(result.profile, result.option_label);
+        document.getElementById('auth-profile').textContent = result.auth_status.profile;
         document.getElementById('auth-level').textContent = result.auth_status.level;
         document.getElementById('auth-message').textContent = result.auth_status.message;
-        renderMessage('page-message', 'success', '账号新增成功', `当前使用：${{result.state_path}}`);
+        renderMessage('page-message', 'success', '账号新增成功', `当前使用：${{result.profile}}`);
         event.target.reset();
       }} catch (error) {{
         renderMessage('page-message', 'warning', '新增账号失败', error.message);
@@ -685,6 +699,7 @@ def _render_home(message: str = "", level: str = "info") -> str:
     document.getElementById('publish-form').addEventListener('submit', async (event) => {{
       event.preventDefault();
       if (busy) return;
+      if (!ensureAccountSelected()) return;
       document.getElementById('publish-result').classList.remove('active');
       const form = new FormData(event.target);
       setBusy(true, '正在发布', '正在打开创作中心并执行发布流程，请不要重复提交。');
@@ -728,7 +743,7 @@ def home(message: str = "", level: str = "info") -> str:
 def auth_status() -> dict[str, str | int | float]:
     try:
         status = get_auth_status()
-        logger.info("auth_status | success | level=%s", status.get("level"))
+        logger.info("auth_status | success | level=%s | profile=%s", status.get("level"), status.get("profile"))
         return status
     except Exception as exc:
         logger.exception("auth_status | failed")
@@ -777,43 +792,38 @@ def api_publish(payload: PublishRequest) -> dict[str, str]:
             if payload.auto_submit
             else "已填写到小红书发布页，但未自动点击最终发布"
         )
-        logger.info(
-            "publish | success | artifact_dir=%s | auto_submit=%s",
-            payload.artifact_dir,
-            payload.auto_submit,
-        )
+        logger.info("publish | success | artifact_dir=%s | auto_submit=%s", payload.artifact_dir, payload.auto_submit)
         return {"message": message, "artifact_dir": str(artifact_path)}
     except Exception as exc:
-        logger.exception(
-            "publish | failed | artifact_dir=%s | auto_submit=%s",
-            payload.artifact_dir,
-            payload.auto_submit,
-        )
+        logger.exception("publish | failed | artifact_dir=%s | auto_submit=%s", payload.artifact_dir, payload.auto_submit)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/account/select")
 def api_account_select(payload: SwitchAccountRequest) -> dict[str, object]:
     try:
-        selected = set_active_login_state_path(payload.state_path)
+        if not payload.profile.strip():
+            raise ValueError("请选择一个小红书账号。")
+        normalized = build_profile_name(payload.profile)
+        record = set_active_login_account(normalized)
         auth_status = get_auth_status()
-        logger.info("account_select | success | state_path=%s", selected)
-        return {"state_path": str(selected), "auth_status": auth_status}
+        logger.info("account_select | success | profile=%s", normalized)
+        return {"profile": record.profile, "auth_status": auth_status}
     except Exception as exc:
-        logger.exception("account_select | failed | state_path=%s", payload.state_path)
+        logger.exception("account_select | failed | profile=%s", payload.profile)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/account/add")
 def api_account_add(payload: AddAccountRequest) -> dict[str, object]:
     try:
-        target = build_profile_state_path(payload.profile)
-        exported = export_login_state_to_sync(target)
+        normalized = build_profile_name(payload.profile)
+        profile = export_login_state_sync(normalized)
         auth_status = get_auth_status()
-        option_label = f"{exported.stem} · {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        logger.info("account_add | success | profile=%s | state_path=%s", payload.profile, exported)
+        option_label = format_account_option_label(profile, datetime.now())
+        logger.info("account_add | success | profile=%s", profile)
         return {
-            "state_path": str(exported),
+            "profile": profile,
             "option_label": option_label,
             "auth_status": auth_status,
         }

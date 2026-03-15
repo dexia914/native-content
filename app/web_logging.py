@@ -33,8 +33,9 @@ def get_web_logger() -> logging.Logger:
     return logger
 
 
-def read_recent_logs(limit: int = 80) -> list[str]:
+def read_recent_logs(limit: int = 200) -> list[str]:
     if not LOG_FILE.exists():
         return []
     lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-    return lines[-limit:]
+    error_lines = [line for line in lines if " | ERROR | " in line or "Traceback" in line]
+    return error_lines[-limit:]

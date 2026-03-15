@@ -3,16 +3,11 @@ from pathlib import Path
 import typer
 from rich import print
 
-from app.account_state import build_profile_state_path
+from app.account_state import build_profile_name
 from app.content.generator import SoftPostPipeline
-from app.distribution.xiaohongshu import (
-    export_login_state_sync,
-    export_login_state_to_sync,
-    get_auth_status,
-    publish_sync,
-)
+from app.distribution.xiaohongshu import export_login_state_sync, get_auth_status, publish_sync
 
-app = typer.Typer(help="动态选题 -> 小红书软文与封面生成、登录态管理、自动发布")
+app = typer.Typer(help="动态选题 -> 小红书软文与封面生成、MySQL 登录态管理、自动发布")
 
 
 @app.command()
@@ -62,26 +57,20 @@ def publish(
 @app.command()
 def auth(
     profile: str = typer.Option(
-        "",
+        "default",
         "--profile",
-        help="新增账号配置名，例如 main、backup。会保存到 .auth/xiaohongshu-<profile>.json",
+        help="账号标识，例如 main、backup。登录态会直接保存到 MySQL。",
     )
 ) -> None:
-    if profile.strip():
-        state_path = build_profile_state_path(profile)
-        exported = export_login_state_to_sync(state_path)
-        print(f"[green]新增账号登录态已保存[/green]: {exported}")
-        print("[green]该账号已自动切换为当前生效账号[/green]")
-        return
-
-    state_path = export_login_state_sync()
-    print(f"[green]登录态已保存[/green]: {state_path}")
+    saved_profile = export_login_state_sync(build_profile_name(profile))
+    print(f"[green]账号登录态已保存到 MySQL[/green]: {saved_profile}")
+    print("[green]该账号已自动切换为当前生效账号[/green]")
 
 
 @app.command("auth-status")
 def auth_status() -> None:
     status = get_auth_status()
-    print(f"登录态文件: {status['state_path']}")
+    print(f"当前账号: {status['profile']}")
     print(f"关键 cookie 数量: {status['cookie_count']}")
     print(f"最早到期 cookie: {status['earliest_cookie']}")
     print(f"最早到期时间(UTC): {status['earliest_expiry_utc']}")
